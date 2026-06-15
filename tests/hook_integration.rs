@@ -168,7 +168,68 @@ fn nrun_absent_passes_through() {
 }
 
 #[test]
-fn bash_command_with_nrun_present_passes_through() {
+fn pnpm_dev_is_rewritten_to_nrun() {
     let (out, _root) = run_hook(&bash_event("pnpm dev"), true);
+    let cmd = rewritten_command(&out);
+    assert!(cmd.starts_with("nrun --title pnpm "), "got: {cmd}");
+    let ui = updated_input(&out).unwrap();
+    assert_eq!(ui["run_in_background"], serde_json::json!(true));
+}
+
+#[test]
+fn rewrite_preserves_original_tool_input_fields() {
+    let (out, _root) = run_hook(&bash_event("pnpm dev"), true);
+    let ui = updated_input(&out).unwrap();
+    assert_eq!(ui["description"], serde_json::json!("d"));
+    assert_eq!(ui["timeout"], serde_json::json!(120000));
+}
+
+#[test]
+fn generated_script_execs_the_command() {
+    let (out, _root) = run_hook(&bash_event("pnpm dev"), true);
+    let body = script_body(&rewritten_command(&out));
+    assert!(body.contains("exec pnpm dev"), "script was: {body}");
+}
+
+#[test]
+fn simple_allowlist_entries_are_intercepted() {
+    for (input, title) in [
+        ("vite", "vite"),
+        ("make", "make"),
+        ("cmake", "cmake"),
+        ("configure", "configure"),
+        ("npm run dev", "npm"),
+        ("yarn dev", "yarn"),
+        ("next dev", "next"),
+        ("npx next dev", "next"),
+        ("npx vite", "vite"),
+    ] {
+        let (out, _root) = run_hook(&bash_event(input), true);
+        let cmd = rewritten_command(&out);
+        assert!(
+            cmd.contains(&format!("--title {title} ")),
+            "input {input:?} -> {cmd}"
+        );
+    }
+}
+
+#[test]
+fn non_allowlisted_commands_pass_through() {
+    for input in [
+        "ls",
+        "npm test",
+        "git status",
+        "echo pnpm dev",
+        "pnpm",
+        "pnpm build",
+    ] {
+        let (out, _root) = run_hook(&bash_event(input), true);
+        assert!(out.trim().is_empty(), "expected pass-through for {input:?}");
+    }
+}
+
+#[test]
+fn recursion_guard_passes_nrun_through() {
+    let (out, _root) = run_hook(&bash_event("nrun --title x /tmp/s.sh"), true);
     assert!(out.trim().is_empty());
 }
