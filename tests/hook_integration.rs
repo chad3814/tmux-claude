@@ -307,3 +307,111 @@ fn without_filter_title_falls_back_to_program() {
     let (out, _root) = run_hook(&bash_event("pnpm dev"), true);
     assert!(rewritten_command(&out).contains("--title pnpm "));
 }
+
+#[test]
+fn docker_run_with_explicit_name() {
+    let (out, _root) = run_hook(&bash_event("docker run -d --name pg postgres:16"), true);
+    let cmd = rewritten_command(&out);
+    assert!(cmd.contains("--title postgres "), "got: {cmd}");
+    assert!(cmd.contains("--docker-name pg "), "got: {cmd}");
+    let body = script_body(&cmd);
+    assert!(body.contains("docker run"), "script: {body}");
+    assert!(body.contains("--name pg"), "script: {body}");
+    assert!(body.contains("--rm"), "script: {body}");
+    assert!(body.contains("postgres:16"), "script: {body}");
+    assert!(!body.contains(" -d "), "script must drop -d: {body}");
+    assert!(
+        !body.contains("--detach"),
+        "script must drop --detach: {body}"
+    );
+}
+
+#[test]
+fn docker_run_derives_name_from_image() {
+    let (out, _root) = run_hook(&bash_event("docker run -d nginx"), true);
+    let cmd = rewritten_command(&out);
+    assert!(cmd.contains("--title nginx "), "got: {cmd}");
+    assert!(cmd.contains("--docker-name nginx "), "got: {cmd}");
+    let body = script_body(&cmd);
+    assert!(body.contains("--name nginx"), "script: {body}");
+    assert!(body.contains("--rm"), "script: {body}");
+}
+
+#[test]
+fn docker_run_options_precede_image() {
+    let (out, _root) = run_hook(
+        &bash_event("docker run -d -p 5432:5432 -e PASS=x postgres:16"),
+        true,
+    );
+    let cmd = rewritten_command(&out);
+    assert!(cmd.contains("--docker-name postgres "), "got: {cmd}");
+    let body = script_body(&cmd);
+    // every injected/kept option must appear before the image token
+    let img = body.find("postgres:16").expect("image present");
+    for opt in ["-p 5432:5432", "-e PASS=x", "--name postgres", "--rm"] {
+        let at = body
+            .find(opt)
+            .unwrap_or_else(|| panic!("missing {opt}: {body}"));
+        assert!(at < img, "{opt:?} must precede image: {body}");
+    }
+}
+
+#[test]
+fn docker_compose_up_drops_detach_and_titles_compose() {
+    for (input, prog) in [
+        ("docker compose up -d", "docker compose up"),
+        ("docker-compose up -d", "docker-compose up"),
+    ] {
+        let (out, _root) = run_hook(&bash_event(input), true);
+        let cmd = rewritten_command(&out);
+        assert!(cmd.contains("--title compose "), "input {input:?} -> {cmd}");
+        assert!(
+            !cmd.contains("--docker-name"),
+            "compose has no docker-name: {cmd}"
+        );
+        let body = script_body(&cmd);
+        assert!(body.contains(&format!("exec {prog}")), "script: {body}");
+        assert!(!body.contains(" -d"), "script must drop -d: {body}");
+    }
+}
+
+#[test]
+fn docker_run_rm_not_duplicated_when_present() {
+    let (out, _root) = run_hook(&bash_event("docker run --rm -d nginx"), true);
+    let body = script_body(&rewritten_command(&out));
+    assert_eq!(body.matches("--rm").count(), 1, "exactly one --rm: {body}");
+    assert!(!body.contains(" -d "), "must drop -d: {body}");
+}
+
+#[test]
+fn docker_run_name_equals_form() {
+    let (out, _root) = run_hook(&bash_event("docker run -d --name=pg postgres:16"), true);
+    let cmd = rewritten_command(&out);
+    assert!(cmd.contains("--docker-name pg "), "got: {cmd}");
+    assert!(cmd.contains("--title postgres "), "got: {cmd}");
+    let body = script_body(&cmd);
+    assert!(body.contains("--name=pg"), "script: {body}");
+}
+
+#[test]
+fn docker_run_container_command_tail_follows_image() {
+    let (out, _root) = run_hook(&bash_event("docker run -d alpine echo hi"), true);
+    let body = script_body(&rewritten_command(&out));
+    // the container command (echo hi) must come AFTER the image token
+    assert!(body.contains("alpine echo hi"), "tail after image: {body}");
+    assert!(body.contains("--name alpine"), "script: {body}");
+}
+
+#[test]
+fn docker_run_keeps_it_and_finds_image() {
+    let (out, _root) = run_hook(&bash_event("docker run -it ubuntu"), true);
+    let cmd = rewritten_command(&out);
+    assert!(cmd.contains("--title ubuntu "), "got: {cmd}");
+    assert!(cmd.contains("--docker-name ubuntu "), "got: {cmd}");
+    let body = script_body(&cmd);
+    // -it must be kept and must NOT have swallowed the image
+    let it = body.find("-it").expect("-it kept");
+    let img = body.rfind("ubuntu").expect("image present");
+    assert!(it < img, "-it before image: {body}");
+    assert!(body.contains("--rm"), "script: {body}");
+}

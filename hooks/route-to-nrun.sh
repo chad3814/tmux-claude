@@ -93,6 +93,8 @@ contains() {
 # invocations. The only over-match is a nonsense ordering like `npm dev run`,
 # which is harmless (it fails the same whether routed through nrun or not).
 matched=0
+is_docker_run=0
+is_compose=0
 case "$eprog" in
     pnpm) contains dev "${eff[@]:1}" && matched=1 ;;
     npm) contains run "${eff[@]:1}" && contains dev "${eff[@]:1}" && matched=1 ;;
@@ -101,6 +103,19 @@ case "$eprog" in
     vite) matched=1 ;;
     make | cmake) matched=1 ;;
     configure | ./configure) matched=1 ;;
+    docker)
+        if [ "${eff[1]:-}" = "run" ]; then
+            matched=1
+            is_docker_run=1
+        elif [ "${eff[1]:-}" = "compose" ] && [ "${eff[2]:-}" = "up" ]; then
+            matched=1
+            is_compose=1
+        fi
+        ;;
+    docker-compose) [ "${eff[1]:-}" = "up" ] && {
+        matched=1
+        is_compose=1
+    } ;;
 esac
 [ "$matched" = "1" ] || passthrough
 
@@ -113,7 +128,85 @@ for ((i = 0; i < ${#eff[@]}; i++)); do
     esac
 done
 [ -z "$title" ] && title="$eprog"
+
+docker_name=""
 effective_cmd="$cmd"
+
+if [ "$is_docker_run" = "1" ]; then
+    # flags whose argument must be skipped when hunting for the image token
+    valflags=" -p --publish -e --env --env-file -v --volume --mount --name -w --workdir --network --net -u --user --entrypoint -l --label -h --hostname --add-host --device --restart --expose --link -m --memory --cpus --gpus --platform --pull "
+    args=("${eff[@]:2}")
+    opts=()
+    cmd_tail=()
+    image=""
+    has_name=""
+    name_val=""
+    seen_rm=0
+    skip_next=0
+    for ((j = 0; j < ${#args[@]}; j++)); do
+        a="${args[j]}"
+        if [ "$skip_next" = "1" ]; then
+            skip_next=0
+            opts+=("$a")
+            continue
+        fi
+        if [ -n "$image" ]; then
+            cmd_tail+=("$a")
+            continue
+        fi
+        # Only exact -d/--detach is de-detached; a combined short cluster like
+        # -dit is left as-is (best-effort), so it would still run detached.
+        case "$a" in
+            -d | --detach) ;;
+            --rm)
+                seen_rm=1
+                opts+=("$a")
+                ;;
+            --name)
+                has_name=1
+                name_val="${args[j + 1]:-}"
+                opts+=("$a")
+                skip_next=1
+                ;;
+            --name=*)
+                has_name=1
+                name_val="${a#--name=}"
+                opts+=("$a")
+                ;;
+            -*)
+                opts+=("$a")
+                [[ " $valflags " == *" $a "* ]] && skip_next=1
+                ;;
+            *) image="$a" ;;
+        esac
+    done
+    img_base="${image##*/}"
+    img_base="${img_base%%:*}"
+    img_base="${img_base%%@*}"
+    if [ -n "$has_name" ]; then
+        docker_name="$name_val"
+    else
+        docker_name="${img_base:-docker}"
+    fi
+    rebuilt=("docker" "run")
+    [ "${#opts[@]}" -gt 0 ] && rebuilt+=("${opts[@]}")
+    [ -z "$has_name" ] && rebuilt+=("--name" "$docker_name")
+    [ "$seen_rm" = "0" ] && rebuilt+=("--rm")
+    rebuilt+=("$image")
+    [ "${#cmd_tail[@]}" -gt 0 ] && rebuilt+=("${cmd_tail[@]}")
+    effective_cmd="${rebuilt[*]}"
+    [ -z "$title" ] || [ "$title" = "docker" ] && title="${img_base:-docker}"
+elif [ "$is_compose" = "1" ]; then
+    rebuilt=()
+    for t in "${eff[@]}"; do
+        case "$t" in
+            -d | --detach) ;;
+            *) rebuilt+=("$t") ;;
+        esac
+    done
+    effective_cmd="${rebuilt[*]}"
+    title="compose"
+fi
 
 # --- write the temp script (no nested quoting in the rewritten command) ------
 script="$(mktemp "${TMPDIR:-/tmp}/nrun-script-XXXXXX.sh")" || passthrough
@@ -128,7 +221,9 @@ script="$(mktemp "${TMPDIR:-/tmp}/nrun-script-XXXXXX.sh")" || passthrough
 chmod +x "$script" 2>/dev/null || true
 
 # --- build the nrun command --------------------------------------------------
-nrun_cmd="nrun --title $(printf '%q' "$title") $(printf '%q' "$script")"
+nrun_cmd="nrun --title $(printf '%q' "$title")"
+[ -n "$docker_name" ] && nrun_cmd+=" --docker-name $(printf '%q' "$docker_name")"
+nrun_cmd+=" $(printf '%q' "$script")"
 
 # --- emit updatedInput, preserving all original tool_input fields ------------
 printf '%s' "$input" | jq -c --arg cmd "$nrun_cmd" \
