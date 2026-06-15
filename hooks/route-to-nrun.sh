@@ -26,6 +26,43 @@ cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)"
 # nrun must be installed; otherwise routing is impossible.
 command -v nrun >/dev/null 2>&1 || passthrough
 
+# --- reject command-substitution / pipes / redirects / subshells / sequences -
+# (A leading `cd <dir> &&` is the only `&` we tolerate; handled just below.)
+case "$cmd" in
+    *'|'* | *';'* | *'<'* | *'>'* | *'('* | *')'* | *'`'*) passthrough ;;
+esac
+
+# --- strip a single leading `cd <dir> &&` ------------------------------------
+cd_dir=""
+if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]&]+)[[:space:]]*\&\&[[:space:]]*(.+)$ ]]; then
+    cd_dir="${BASH_REMATCH[1]}"
+    cmd="${BASH_REMATCH[2]}"
+fi
+
+# --- strip leading VAR=value env assignments ---------------------------------
+# Values are written UNQUOTED into the script (`export VAR=value`) so that
+# `$VAR` references expand at run time. A value containing a quote or backslash
+# can't be emitted safely unquoted, so bail to passthrough (fail-open) rather
+# than write a broken script line.
+env_assignments=()
+while [[ "$cmd" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]&]*)[[:space:]]+(.+)$ ]]; do
+    assignment="${BASH_REMATCH[1]}"
+    rest="${BASH_REMATCH[2]}"
+    case "$assignment" in
+        *\'* | *\"* | *\\*) passthrough ;;
+    esac
+    env_assignments+=("$assignment")
+    cmd="$rest"
+done
+
+# trim surrounding whitespace
+cmd="${cmd#"${cmd%%[![:space:]]*}"}"
+cmd="${cmd%"${cmd##*[![:space:]]}"}"
+
+# any remaining `&` is a background/stray operator we do not handle
+case "$cmd" in *'&'*) passthrough ;; esac
+[ -n "$cmd" ] || passthrough
+
 # --- tokenize ----------------------------------------------------------------
 read -r -a toks <<< "$cmd"
 [ "${#toks[@]}" -ge 1 ] || passthrough
@@ -74,6 +111,10 @@ effective_cmd="$cmd"
 script="$(mktemp "${TMPDIR:-/tmp}/nrun-script-XXXXXX.sh")" || passthrough
 {
     printf '#!/usr/bin/env bash\n'
+    [ -n "$cd_dir" ] && printf 'cd %q\n' "$cd_dir"
+    for kv in ${env_assignments[@]+"${env_assignments[@]}"}; do
+        printf 'export %s\n' "$kv"
+    done
     printf 'exec %s\n' "$effective_cmd"
 } >"$script" || passthrough
 chmod +x "$script" 2>/dev/null || true

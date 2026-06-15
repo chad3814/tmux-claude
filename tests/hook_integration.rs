@@ -233,3 +233,55 @@ fn recursion_guard_passes_nrun_through() {
     let (out, _root) = run_hook(&bash_event("nrun --title x /tmp/s.sh"), true);
     assert!(out.trim().is_empty());
 }
+
+#[test]
+fn compound_shapes_pass_through() {
+    for input in [
+        "pnpm dev | grep ready",
+        "a && b && pnpm dev",
+        "pnpm dev > out.log",
+        "pnpm dev < in.txt",
+        "pnpm dev; echo done",
+        "(pnpm dev)",
+        "echo `pnpm dev`",
+        "pnpm dev &",
+    ] {
+        let (out, _root) = run_hook(&bash_event(input), true);
+        assert!(out.trim().is_empty(), "expected pass-through for {input:?}");
+    }
+}
+
+#[test]
+fn leading_cd_is_folded_into_script() {
+    let (out, _root) = run_hook(&bash_event("cd app && pnpm dev"), true);
+    let cmd = rewritten_command(&out);
+    assert!(cmd.contains("--title pnpm "), "got: {cmd}");
+    let body = script_body(&cmd);
+    assert!(body.contains("cd app"), "script was: {body}");
+    assert!(body.contains("exec pnpm dev"), "script was: {body}");
+}
+
+#[test]
+fn leading_env_assignments_are_folded_into_script() {
+    let (out, _root) = run_hook(&bash_event("FORCE_COLOR=1 vite"), true);
+    let body = script_body(&rewritten_command(&out));
+    assert!(body.contains("export FORCE_COLOR=1"), "script was: {body}");
+    assert!(body.contains("exec vite"), "script was: {body}");
+}
+
+#[test]
+fn env_value_with_quote_passes_through() {
+    // A quote in an env value can't be folded into the unquoted `export` line,
+    // so the whole command must pass through (fail-open), not produce a rewrite.
+    let (out, _root) = run_hook(&bash_event("FOO=ba'r vite"), true);
+    assert!(out.trim().is_empty(), "got: {out}");
+}
+
+#[test]
+fn cd_and_env_combined_fold() {
+    let (out, _root) = run_hook(&bash_event("cd app && DEBUG=1 pnpm dev"), true);
+    let body = script_body(&rewritten_command(&out));
+    assert!(body.contains("cd app\n"), "script: {body}");
+    assert!(body.contains("export DEBUG=1\n"), "script: {body}");
+    assert!(body.contains("exec pnpm dev"), "script: {body}");
+}
