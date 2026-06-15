@@ -285,3 +285,25 @@ fn cd_and_env_combined_fold() {
     assert!(body.contains("export DEBUG=1\n"), "script: {body}");
     assert!(body.contains("exec pnpm dev"), "script: {body}");
 }
+
+#[test]
+fn filter_value_becomes_title() {
+    for (input, title) in [
+        ("pnpm --filter web dev", "web"),
+        ("pnpm -F app dev", "app"),
+        ("pnpm --filter=api dev", "api"),
+    ] {
+        let (out, _root) = run_hook(&bash_event(input), true);
+        let cmd = rewritten_command(&out);
+        assert!(
+            cmd.contains(&format!("--title {title} ")),
+            "input {input:?} -> {cmd}"
+        );
+    }
+}
+
+#[test]
+fn without_filter_title_falls_back_to_program() {
+    let (out, _root) = run_hook(&bash_event("pnpm dev"), true);
+    assert!(rewritten_command(&out).contains("--title pnpm "));
+}

@@ -104,7 +104,15 @@ case "$eprog" in
 esac
 [ "$matched" = "1" ] || passthrough
 
-title="$eprog"
+# --- title (priority: --filter > program name; docker image added in Task 5) -
+title=""
+for ((i = 0; i < ${#eff[@]}; i++)); do
+    case "${eff[i]}" in
+        --filter | -F) title="${eff[i + 1]:-}"; break ;;
+        --filter=*) title="${eff[i]#--filter=}"; break ;;
+    esac
+done
+[ -z "$title" ] && title="$eprog"
 effective_cmd="$cmd"
 
 # --- write the temp script (no nested quoting in the rewritten command) ------
