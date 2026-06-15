@@ -1,0 +1,17 @@
+[package]
+name = "nrun"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "nrun"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nrun"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+signal-hook = "0.3"
+nix = { version = "0.29", features = ["signal", "process"] }
