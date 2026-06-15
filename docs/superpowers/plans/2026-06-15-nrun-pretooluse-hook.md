@@ -22,6 +22,15 @@
 **Commit gate (must pass before every commit, per project CLAUDE.md):**
 `cargo fmt --check`; `cargo clippy --all-targets --all-features -- -D warnings`; `cargo test`; `cargo build --release`.
 
+**Harness contract note (added after Task 1 review):** `run_hook` returns `(String, TestRoot)`, not `String` — the second element is an RAII guard that deletes the isolated temp dir on drop. Every test must bind it to a named local so the temp dir (and any generated script the hook wrote under `TMPDIR`) survives until the assertions finish:
+
+```rust
+let (out, _root) = run_hook(&bash_event("pnpm dev"), true);
+// ... assert on `out`; call script_body(&rewritten_command(&out)) while `_root` is in scope ...
+```
+
+For single-line pass-through assertions, bind first: `let (out, _root) = run_hook(input, true); assert!(out.trim().is_empty());`. The Task 2–5 test snippets below are written in the older `let out = run_hook(...)` form — **adapt each to the `(out, _root)` tuple form.**
+
 ---
 
 ## Task 1: Harness + fail-open skeleton
