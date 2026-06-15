@@ -132,6 +132,16 @@ done
 docker_name=""
 effective_cmd="$cmd"
 
+# The docker/compose paths rebuild the command by re-joining tokens that were
+# split quote-blind, which cannot preserve a quoted argument. Rather than emit
+# a mangled command (a fail-open violation), pass through when either docker
+# path would run on a command containing a quote.
+if [ "$is_docker_run" = "1" ] || [ "$is_compose" = "1" ]; then
+    case "$cmd" in
+        *\'* | *\"*) passthrough ;;
+    esac
+fi
+
 if [ "$is_docker_run" = "1" ]; then
     # flags whose argument must be skipped when hunting for the image token
     valflags=" -p --publish -e --env --env-file -v --volume --mount --name -w --workdir --network --net -u --user --entrypoint -l --label -h --hostname --add-host --device --restart --expose --link -m --memory --cpus --gpus --platform --pull "
@@ -216,6 +226,8 @@ script="$(mktemp "${TMPDIR:-/tmp}/nrun-script-XXXXXX.sh")" || passthrough
     for kv in ${env_assignments[@]+"${env_assignments[@]}"}; do
         printf 'export %s\n' "$kv"
     done
+    # Unquoted on purpose: the command word-splits/globs at run time, exactly
+    # as it would in the user's own shell.
     printf 'exec %s\n' "$effective_cmd"
 } >"$script" || passthrough
 chmod +x "$script" 2>/dev/null || true

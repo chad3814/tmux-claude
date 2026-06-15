@@ -415,3 +415,29 @@ fn docker_run_keeps_it_and_finds_image() {
     assert!(it < img, "-it before image: {body}");
     assert!(body.contains("--rm"), "script: {body}");
 }
+
+#[test]
+fn docker_run_with_quoted_arg_passes_through() {
+    // The docker rebuild can't preserve quoting, so a quoted arg must pass
+    // through unchanged rather than produce a mangled command.
+    let (out, _root) = run_hook(&bash_event(r#"docker run -e MSG="hi there" nginx"#), true);
+    assert!(out.trim().is_empty(), "got: {out}");
+}
+
+#[test]
+fn docker_compose_with_quoted_arg_passes_through() {
+    let (out, _root) = run_hook(&bash_event(r#"docker compose up -e MSG="a b""#), true);
+    assert!(out.trim().is_empty(), "got: {out}");
+}
+
+#[test]
+fn non_docker_quoted_arg_is_preserved() {
+    // The non-docker path keeps the original command string verbatim, so
+    // quoted arguments survive into the generated script.
+    let (out, _root) = run_hook(&bash_event(r#"make CFLAGS="-O2 -g" all"#), true);
+    let body = script_body(&rewritten_command(&out));
+    assert!(
+        body.contains(r#"exec make CFLAGS="-O2 -g" all"#),
+        "script: {body}"
+    );
+}
